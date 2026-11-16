@@ -1,4 +1,24 @@
-# Ultrasonic Object Tracking System - FPGA build
+# Ultrasonic Object Tracking System - FPGA integration
+
+## How the modules connect
+
+```
+btnU -> debounce -> measurement_fsm x3 (started together)
+                         |
+                         +-> burst_generator -> frequency_generator -> JB1-JB3 -> PCB Tx
+PCB Rx -> JXADC -> xadc_reader -> echo_detect x3 -> echo_valid to each FSM
+                                         (or fake_echo_gen when SW14 is on)
+3 distances (mm) -> coordinate_unit -> coordinate_computer -> X, Y -> lcd1602_driver
+```
+
+- `measurement_fsm` (three copies, one per sensor) controls timing: it fires
+  the burst, ignores the receiver while the transducer rings down, waits for
+  the echo and converts the time of flight to millimeters.
+- Only the first FSM starts the burst; all three transmitters fire together
+  and each receiver times its own echo.
+- `coordinate_unit` holds the three distances steady for 150 clock cycles
+  before reading `coordinate_computer`, because its dividers take longer than
+  one 10 ns clock.
 
 ## Files
 
@@ -12,43 +32,51 @@
 | `RTL/` | `Coordinate_Computer.v`, `Square_Root.v`, `CSM_Row.v`, `CSM.v` | Zach |
 | `RTL/display/` | `lcd1602_driver.v`, `bin2bcd.v` | Jagrati |
 | `Constraints/` | `ultrasonic_top.xdc` | |
-| `Sim/integration/` | `tb_ultrasonic_top.v`, `sim_xadc_reader.v` | |
+| `Sim/integration/` | `tb_ultrasonic_top.v`, `sim_xadc_reader.v` | Jagrati |
+| `Sim/tx_controller/` | unit testbenches for the transmit and coordinate modules | Zach |
 
-Not used in the build: `distance_calculator.v` and `Sensor_Localization_System.v`
-(temporary test files), and the empty placeholders `adc_controller.v`,
-`filter.v`, `correlator.v`, `peak_detector.v`, `sample_buffer.v`,
-`tof_calculator.v`, `waveform_generator.v`, `clock_divider.v`.
+Every `.v` file under `RTL/` is part of the build.
 
 ## Vivado setup
 
 1. New RTL project, part `xc7a35tcpg236-1`.
-2. Add every `.v` file in the table above (all of `RTL/` except the unused ones).
+2. Add every `.v` file under `RTL/` as a design source.
 3. Add `Constraints/ultrasonic_top.xdc`.
-4. IP Catalog -> XADC Wizard, component name `xadc_wiz_0`:
+4. Set `ultrasonic_top` as top.
+5. Create the XADC IP (needed for the bitstream, not for simulation):
+   IP Catalog -> XADC Wizard, component name `xadc_wiz_0`
    - Basic: DRP interface, Continuous, Channel Sequencer, DCLK 100 MHz, 1000 KSPS
    - ADC Setup: sequencer mode Continuous, no averaging
    - Alarms: all off
-   - Channel Sequencer: VAUXP6/N6, VAUXP7/N7, VAUXP14/N14 (unipolar), nothing else
-5. Set `ultrasonic_top` as top, Generate Bitstream, program.
+   - Channel Sequencer: only VAUXP6/N6, VAUXP7/N7, VAUXP14/N14 (unipolar)
+6. Generate Bitstream, then Hardware Manager -> Program Device.
 
-Simulation: add `Sim/integration/tb_ultrasonic_top.v` and
-`Sim/integration/sim_xadc_reader.v` as simulation sources, and **disable**
-`RTL/receive/xadc_reader.v` for simulation (right-click -> Properties ->
-uncheck "Simulation"). Run all; it ends with `RESULT: PASS`.
+## Simulation
+
+1. Add `Sim/integration/tb_ultrasonic_top.v` and
+   `Sim/integration/sim_xadc_reader.v` as simulation sources.
+2. Both `xadc_reader.v` and `sim_xadc_reader.v` define the module
+   `xadc_reader`, so keep them apart:
+   - `RTL/receive/xadc_reader.v`: Source File Properties -> uncheck **Simulation**
+   - `Sim/integration/sim_xadc_reader.v`: uncheck **Synthesis** and **Implementation**
+3. Set `tb_ultrasonic_top` as the simulation top.
+4. Run Behavioral Simulation, then `run all` (about 1 minute in Vivado).
 
 ## Pins
 
 | Pin | Signal |
 |---|---|
+| JA1-JA4 | LCD D4-D7 |
+| JA7 / JA8 | LCD RS / E |
 | JB1, JB2, JB3 | Tx channel 1, 2, 3 -> PCB Tx drivers |
 | JB4 | Burst enable, 200 us high (scope trigger) |
 | JXADC 1 / 7 | Rx1 + / - |
 | JXADC 2 / 8 | Rx2 + / - |
 | JXADC 3 / 9 | Rx3 + / - |
-| JA | LCD |
 | GND | shared with the PCB |
 
-Receiver outputs must stay between 0 and 1 V, idling near 0.5 V.
+Receiver outputs must stay between 0 and 1 V, idling near 0.5 V. Never
+connect the PCB's 12 V to any Basys 3 pin; share ground only.
 
 ## Controls
 
@@ -58,27 +86,41 @@ Receiver outputs must stay between 0 and 1 V, idling near 0.5 V.
 | SW0-SW2 | enable Tx channel 1-3 |
 | SW3-SW9 | echo threshold (value x 4) |
 | SW10-SW11 | fake-echo target 0-3 |
-| SW12-SW13 | LCD page: 0 distances, 1 X/Y, 2 echo levels, 3 Tx check |
+| SW12-SW13 | LCD page (table below) |
 | SW14 | 1 = fake echoes (no PCB), 0 = real receivers |
 | SW15 | auto mode, 10 measurements/s |
 
-Fake-echo targets (sensors at x = 0, 1500, 3000 mm):
+| SW13 | SW12 | LCD page |
+|---|---|---|
+| off | off | Distances D1, D2, D3 |
+| off | on | Position X, Y |
+| on | off | Echo levels P1-P3 and threshold |
+| on | on | Transmit check |
+
+Fake-echo targets (sensors at x = 0, 1500, 3000 mm, facing the same way):
 0 = (1500, 1000), 1 = (500, 800), 2 = (2000, 1500), 3 = (1000, 2000).
 
 ## Test order (same bitstream every time)
 
-1. **Tx check.** SW0-2 on, SW12-13 = 3, press btnU. LCD: `Cycles:08 OK`.
-   Scope: trigger on JB4, probe JB1-3, expect 8 cycles at 40 kHz.
-2. **Math check, no PCB.** SW14 on, SW12-13 = 1, pick a target with
-   SW10-11, press btnU. LCD shows that target's X and Y.
-3. **Echo levels.** Connect the PCB, SW14 off, SW12-13 = 2, nothing in front.
-   Note P1-P3 (noise). Set the threshold (SW3-9) to 2-3x that.
-4. **Distances.** SW12-13 = 0, flat object at a tape-measured distance.
-5. **Position.** SW12-13 = 1, object in front of all three sensors, SW15 on.
+1. **Tx check (no PCB).** SW0-SW2 on, SW12 and SW13 on, press btnU.
+   LCD: `Cycles:08  OK`. Scope: trigger on JB4, probe JB1-JB3, expect
+   8 cycles at 40 kHz.
+2. **Math check (no PCB).** SW14 on, SW12 on, SW13 off, pick a target with
+   SW10-SW11, press btnU. LCD shows that target's X and Y
+   (target 0: `X:+1499 Y:1000`).
+3. **Transmitters.** Connect JB1-JB3 and GND to the PCB. Start with SW0 only
+   and check the 12 V burst on transmitter 1 with a scope, then add SW1, SW2.
+4. **Echo levels.** Connect JXADC to the PCB (after confirming 0-1 V),
+   SW14 off, SW13 on, SW12 off, nothing in front. Note P1-P3 (noise) and set
+   the threshold (SW3-SW9) to 2-3 times that.
+5. **Distances.** SW12 and SW13 off, flat object at a tape-measured distance.
+   Check one sensor first, then all three.
+6. **Position.** SW12 on, object in front of all three sensors, SW15 on for
+   live tracking.
 
-Demo day: start with step 2 (always works), then show steps 4 and 5 live.
+## Results so far
 
-## Simulation results
+Simulation (Icarus Verilog and Vivado XSim, same results):
 
 ```
 Tx: 8 rising edges on each channel
@@ -87,7 +129,21 @@ fake target (500,800)   -> X  499, Y  798
 fake target (2000,1500) -> X 1999, Y 1500
 fake target (1000,2000) -> X 1000, Y 1999
 simulated receivers (500,800)   -> X 491,  Y 809
-simulated receivers (1500,1000) -> X 1499, Y 1013
+simulated receivers (1500,1000) -> X 1500, Y 1014
 receiver 3 silent -> "No fix"
 RESULT: PASS
 ```
+
+Hardware build: synthesis, implementation and bitstream complete. The XADC
+IP is generated correctly.
+
+## Open items
+
+- **Sensor mounting:** the coordinate math assumes sensors in a straight line
+  at 0, 1500 and 3000 mm. Update `Coordinate_Computer.v` if the mounting
+  differs.
+- **Receiver voltage:** confirm the PCB receiver outputs stay within 0-1 V
+  before connecting JXADC.
+- **Three-sensor interference:** all transmitters currently fire together.
+  If receivers pick up each other's pulses, fire them one at a time using
+  SW0-SW2.
