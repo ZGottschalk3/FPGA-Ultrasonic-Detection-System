@@ -1,8 +1,5 @@
 # Ultrasonic Object Tracking System - FPGA build
 
-One Vivado project, one bitstream. Every test, including demo day, is
-selected with switches. Nothing needs to be rebuilt between tests.
-
 ## Files
 
 | Folder | Files | Owner |
@@ -21,11 +18,6 @@ Not used in the build: `distance_calculator.v` and `Sensor_Localization_System.v
 (temporary test files), and the empty placeholders `adc_controller.v`,
 `filter.v`, `correlator.v`, `peak_detector.v`, `sample_buffer.v`,
 `tof_calculator.v`, `waveform_generator.v`, `clock_divider.v`.
-
-**Note for Zach:** `Coordinate_Computer.v` on GitHub (10/16) ended in the middle
-of the `square_root` instance. The missing closing lines were added
-(`.root(y_root)`, `.done(y_done)`, `assign Y_Coordinate = y_root;`,
-`endmodule`). Replace with your full version if it differs.
 
 ## Vivado setup
 
