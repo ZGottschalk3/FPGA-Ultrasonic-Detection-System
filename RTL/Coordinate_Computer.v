@@ -86,3 +86,13 @@ module coordinate_computer(
         .rst      (rst),
         .start    (start),
         .radicand (y_radicand),
+        .root     (y_root),
+        .done     (y_done)
+    );
+
+    // NOTE (Jagrati): the version pushed on 10/16 ended at the line above.
+    // These closing lines were added so the file compiles; Zach, please
+    // replace with your full version if it differs.
+    assign Y_Coordinate = y_root;
+
+endmodule
