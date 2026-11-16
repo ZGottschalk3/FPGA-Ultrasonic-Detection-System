@@ -147,6 +147,30 @@ Safety:
   ground only.
 - Keep LCD pin 5 (RW) on ground so the LCD never drives the FPGA pins.
 
+### PCB connections
+
+| From | To |
+|---|---|
+| 12 V battery / supply | PCB power input (Tx drivers only, never the Basys 3) |
+| Transmitters 1-3 (MA40S4S) | PCB Tx driver outputs 1-3 |
+| Receivers 1-3 (MA40S4R) | PCB Rx amplifier inputs 1-3 |
+| PCB ground | Basys 3 GND (JB pin 5 and JXADC pin 5) |
+
+Mount the three transducer pairs in a straight line at x = 0, 1500 and
+3000 mm, all facing the same direction, to match `Coordinate_Computer.v`.
+
+**Check the receiver voltage before connecting JXADC.** With the PCB powered
+and the JXADC wires disconnected, measure each Rx output against PCB ground:
+- With a multimeter (DC volts): about 0.5 V with no echo.
+- With a scope, while firing bursts (SW15 on): the signal must stay between
+  0 V and 1 V at all times, including right after the burst.
+
+If any output goes above 1 V or below 0 V, add a resistor divider or level
+shift on that channel before connecting it.
+
+Wire and test one channel at a time (transmitter, receiver, then distance)
+before adding the next.
+
 ## Testing on hardware
 
 Same bitstream for every step.
@@ -179,11 +203,6 @@ Same bitstream for every step.
 
 ## Known issues
 
-- Timing report shows negative slack on the coordinate computer's divider
-  paths. `coordinate_unit` holds its inputs steady for 150 clock cycles
-  (1.5 us) before reading the result, far longer than the slowest path,
-  so the design works on hardware; the multicycle constraint in the XDC is
-  being checked.
 - Echo detection reads slightly late on weak echoes (about 7-19 mm), which
   can be calibrated against a tape measure.
 - Speed of sound changes about 0.6 m/s per degree C; room temperature
