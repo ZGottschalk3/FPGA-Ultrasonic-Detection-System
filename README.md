@@ -6,7 +6,8 @@ Team: Zachary Gottschalk, Jagrati Kumari, Andrew Hejnar
 A Basys 3 FPGA uses three 40 kHz ultrasonic transmitter/receiver pairs to
 locate an object in front of them. Each pair measures distance from the
 time an echo takes to return, and the three distances are combined
-(trilateration) to compute the object's X and Y position, shown live on a
+(trilateration) to compute the object's X and Y position and its angle,
+shown live on a
 16x2 LCD. All analog hardware (transmit drivers, receive amplifiers and
 filters) is on a custom PCB.
 
@@ -20,7 +21,7 @@ filters) is on a custom PCB.
 5. The time of flight becomes a distance in millimeters:
    `distance = speed of sound x round-trip time / 2`
 6. The three distances go into the coordinate computer, which solves for X
-   and Y.
+   and Y, and a CORDIC unit computes the angle atan2(Y, X).
 7. The LCD shows distances, position, echo levels or a transmit check.
 
 ```
@@ -44,6 +45,7 @@ facing the same direction. Measurable range is about 205 mm to 5.1 m.
 | `RTL/receive/echo_detect.v` | Envelope + threshold echo detection | Jagrati |
 | `RTL/Coordinate_Computer.v` | Trilateration: 3 distances to X, Y | Zach |
 | `RTL/Square_Root.v`, `RTL/CSM_Row.v`, `RTL/CSM.v` | Hardware square root | Zach |
+| `RTL/Cordic_Angle_Calculator.v`, `RTL/cordic_iteration.v`, `RTL/cordic_angle_rom.v` | CORDIC angle: atan2(Y, X) in degrees | Zach |
 | `RTL/compute/coordinate_unit.v` | Safe timing wrapper for the coordinate computer | Jagrati |
 | `RTL/compute/fake_echo_gen.v` | Fake echoes from known positions, for testing without the PCB | Jagrati |
 | `RTL/display/lcd1602_driver.v` | 1602A LCD driver, 4-bit mode | Jagrati |
@@ -62,7 +64,8 @@ Tested with Vivado 2026.1, part `xc7a35tcpg236-1` (Basys 3).
 2. Add as design sources: `RTL/ultrasonic_top.v`, everything in
    `RTL/control`, `RTL/receive`, `RTL/compute`, `RTL/display`,
    `RTL/tx_controller`, plus `Coordinate_Computer.v`, `Square_Root.v`,
-   `CSM_Row.v`, `CSM.v`.
+   `CSM_Row.v`, `CSM.v`, `Cordic_Angle_Calculator.v`, `cordic_iteration.v`,
+   `cordic_angle_rom.v`.
 3. Add `Constraints/ultrasonic_top.xdc`.
 4. Create the XADC IP: IP Catalog -> XADC Wizard, component name `xadc_wiz_0`
    - Basic: DRP, Continuous, Channel Sequencer, DCLK 100 MHz, 1000 KSPS
@@ -87,13 +90,13 @@ Expected result:
 
 ```
  Tx: ch1 8, ch2 8, ch3 8 rising edges, counter 8
- demo target 0 (1500,1000)  D=1803 1000 1803  X= 1499 Y=1000  PASS
- demo target 1 (500,800)    D= 943 1281 2625  X=  499 Y= 798  PASS
- demo target 2 (2000,1500)  D=2500 1581 1803  X= 1999 Y=1500  PASS
- demo target 3 (1000,2000)  D=2236 2062 2828  X= 1000 Y=1999  PASS
- target (500,800)           D= 951 1290 2637  X=  491 Y= 809  PASS
- target (1500,1000)         D=1813 1008 1812  X= 1500 Y=1014  PASS
- receiver 3 silent          to=100 fix=0                       PASS
+ demo target 0 (1500,1000)  D=1803 1000 1803  X= 1499 Y=1000  A= 33.8  PASS
+ demo target 1 (500,800)    D= 943 1281 2625  X=  499 Y= 798  A= 57.9  PASS
+ demo target 2 (2000,1500)  D=2500 1581 1803  X= 1999 Y=1500  A= 36.5  PASS
+ demo target 3 (1000,2000)  D=2236 2062 2828  X= 1000 Y=1999  A= 63.3  PASS
+ target (500,800)           D= 951 1290 2637  X=  491 Y= 809  A= 58.8  PASS
+ target (1500,1000)         D=1812 1008 1812  X= 1499 Y=1013  A= 33.8  PASS
+ receiver 3 silent          to=100 fix=0                                PASS
  RESULT: PASS
 ```
 
@@ -115,7 +118,7 @@ One bitstream covers every test; choose with switches.
 | SW13 | SW12 | LCD page |
 |---|---|---|
 | off | off | Distances: `D1:1803 D2:1000` / `D3:1803  #0007` |
-| off | on | Position: `X:+1499 Y:1000` / `Fix OK  #0007` |
+| off | on | Position and angle: `X:+1499 Y:1000` / `Ang:33.8   #0007` |
 | on | off | Echo levels: `P1 P2 P3` and threshold `Th` |
 | on | on | Transmit check: `Cycles:08  OK` |
 
@@ -147,6 +150,30 @@ Safety:
   ground only.
 - Keep LCD pin 5 (RW) on ground so the LCD never drives the FPGA pins.
 
+### PCB connections
+
+| From | To |
+|---|---|
+| 12 V battery / supply | PCB power input (Tx drivers only, never the Basys 3) |
+| Transmitters 1-3 (MA40S4S) | PCB Tx driver outputs 1-3 |
+| Receivers 1-3 (MA40S4R) | PCB Rx amplifier inputs 1-3 |
+| PCB ground | Basys 3 GND (JB pin 5 and JXADC pin 5) |
+
+Mount the three transducer pairs in a straight line at x = 0, 1500 and
+3000 mm, all facing the same direction, to match `Coordinate_Computer.v`.
+
+**Check the receiver voltage before connecting JXADC.** With the PCB powered
+and the JXADC wires disconnected, measure each Rx output against PCB ground:
+- With a multimeter (DC volts): about 0.5 V with no echo.
+- With a scope, while firing bursts (SW15 on): the signal must stay between
+  0 V and 1 V at all times, including right after the burst.
+
+If any output goes above 1 V or below 0 V, add a resistor divider or level
+shift on that channel before connecting it.
+
+Wire and test one channel at a time (transmitter, receiver, then distance)
+before adding the next.
+
 ## Testing on hardware
 
 Same bitstream for every step.
@@ -173,17 +200,17 @@ Same bitstream for every step.
 | LCD display | Done, tested on hardware |
 | Echo detection | Done, simulated |
 | Coordinate computer and square root | Done, simulated |
+| Angle (CORDIC) | Done, integrated and simulated (within 0.4 degrees) |
 | Full system integration | Done, simulated (`RESULT: PASS`), bitstream builds |
 | PCB (Tx drivers, Rx amplifiers and filters) | Built, awaiting integration |
-| Velocity and direction | Not started |
+| Velocity | Not started |
 
 ## Known issues
 
-- Timing report shows negative slack on the coordinate computer's divider
-  paths. `coordinate_unit` holds its inputs steady for 150 clock cycles
-  (1.5 us) before reading the result, far longer than the slowest path,
-  so the design works on hardware; the multicycle constraint in the XDC is
-  being checked.
+- The angle is atan2(Y, X): the bearing seen from sensor 1, measured from
+  the line of sensors. It needs X > 0; otherwise the LCD shows `Ang:--.-`.
+  With 8 CORDIC iterations it is accurate to about 0.5 degrees.
+
 - Echo detection reads slightly late on weak echoes (about 7-19 mm), which
   can be calibrated against a tape measure.
 - Speed of sound changes about 0.6 m/s per degree C; room temperature

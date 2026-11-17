@@ -8,7 +8,8 @@ btnU -> debounce -> measurement_fsm x3 (started together)
                          +-> burst_generator -> frequency_generator -> JB1-JB3 -> PCB Tx
 PCB Rx -> JXADC -> xadc_reader -> echo_detect x3 -> echo_valid to each FSM
                                          (or fake_echo_gen when SW14 is on)
-3 distances (mm) -> coordinate_unit -> coordinate_computer -> X, Y -> lcd1602_driver
+3 distances (mm) -> coordinate_unit -> coordinate_computer -> X, Y
+                                  -> CORDIC_Angle_Calculator -> angle -> lcd1602_driver
 ```
 
 - `measurement_fsm` (three copies, one per sensor) controls timing: it fires
@@ -18,7 +19,8 @@ PCB Rx -> JXADC -> xadc_reader -> echo_detect x3 -> echo_valid to each FSM
   and each receiver times its own echo.
 - `coordinate_unit` holds the three distances steady for 150 clock cycles
   before reading `coordinate_computer`, because its dividers take longer than
-  one 10 ns clock.
+  one 10 ns clock. It then feeds X and Y to `CORDIC_Angle_Calculator` and
+  waits 8 cycles for its 8 combinational stages before latching the angle.
 
 ## Files
 
@@ -30,6 +32,7 @@ PCB Rx -> JXADC -> xadc_reader -> echo_detect x3 -> echo_valid to each FSM
 | `RTL/receive/` | `xadc_reader.v`, `echo_detect.v` | Jagrati |
 | `RTL/compute/` | `coordinate_unit.v`, `fake_echo_gen.v` | Jagrati |
 | `RTL/` | `Coordinate_Computer.v`, `Square_Root.v`, `CSM_Row.v`, `CSM.v` | Zach |
+| `RTL/` | `Cordic_Angle_Calculator.v`, `cordic_iteration.v`, `cordic_angle_rom.v` | Zach |
 | `RTL/display/` | `lcd1602_driver.v`, `bin2bcd.v` | Jagrati |
 | `Constraints/` | `ultrasonic_top.xdc` | |
 | `Sim/integration/` | `tb_ultrasonic_top.v`, `sim_xadc_reader.v` | Jagrati |
@@ -93,7 +96,7 @@ connect the PCB's 12 V to any Basys 3 pin; share ground only.
 | SW13 | SW12 | LCD page |
 |---|---|---|
 | off | off | Distances D1, D2, D3 |
-| off | on | Position X, Y |
+| off | on | Position X, Y and angle |
 | on | off | Echo levels P1-P3 and threshold |
 | on | on | Transmit check |
 
@@ -107,7 +110,7 @@ Fake-echo targets (sensors at x = 0, 1500, 3000 mm, facing the same way):
    8 cycles at 40 kHz.
 2. **Math check (no PCB).** SW14 on, SW12 on, SW13 off, pick a target with
    SW10-SW11, press btnU. LCD shows that target's X and Y
-   (target 0: `X:+1499 Y:1000`).
+   (target 0: `X:+1499 Y:1000`, `Ang:33.8`).
 3. **Transmitters.** Connect JB1-JB3 and GND to the PCB. Start with SW0 only
    and check the 12 V burst on transmitter 1 with a scope, then add SW1, SW2.
 4. **Echo levels.** Connect JXADC to the PCB (after confirming 0-1 V),
@@ -124,12 +127,12 @@ Simulation (Icarus Verilog and Vivado XSim, same results):
 
 ```
 Tx: 8 rising edges on each channel
-fake target (1500,1000) -> X 1499, Y 1000
-fake target (500,800)   -> X  499, Y  798
-fake target (2000,1500) -> X 1999, Y 1500
-fake target (1000,2000) -> X 1000, Y 1999
-simulated receivers (500,800)   -> X 491,  Y 809
-simulated receivers (1500,1000) -> X 1500, Y 1014
+fake target (1500,1000) -> X 1499, Y 1000, angle 33.8 (true 33.7)
+fake target (500,800)   -> X  499, Y  798, angle 57.9 (true 58.0)
+fake target (2000,1500) -> X 1999, Y 1500, angle 36.5 (true 36.9)
+fake target (1000,2000) -> X 1000, Y 1999, angle 63.3 (true 63.4)
+simulated receivers (500,800)   -> X  491, Y  809, angle 58.8
+simulated receivers (1500,1000) -> X 1499, Y 1013, angle 33.8
 receiver 3 silent -> "No fix"
 RESULT: PASS
 ```

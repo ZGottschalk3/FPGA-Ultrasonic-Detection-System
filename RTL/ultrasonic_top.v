@@ -12,7 +12,7 @@
 //   btnU -> debounce -> 3x measurement_fsm (lockstep)
 //        -> burst_generator -> frequency_generator -> JB1..JB3 -> PCB Tx
 //   PCB Rx -> JXADC -> xadc_reader -> 3x echo_detect -> echo_valid per FSM
-//   3 distances -> coordinate_unit (Zach's coordinate_computer) -> LCD
+//   3 distances -> coordinate_unit (Zach's coordinate_computer + CORDIC angle) -> LCD
 //
 // SWITCHES
 //   SW0..SW2   enable Tx channel 1..3
@@ -156,6 +156,8 @@ module ultrasonic_top #(
     reg  [13:0] meas_count;
     wire signed [15:0] x_mm;
     wire        [15:0] y_mm;
+    wire signed [31:0] angle_q16;
+    wire        angle_valid;
     wire        coord_valid;
 
     always @(posedge clk) begin
@@ -186,7 +188,13 @@ module ultrasonic_top #(
     coordinate_unit u_coord (
         .clk(clk), .rst(rst), .start(coord_start),
         .d1_mm(d0_q), .d2_mm(d1_q), .d3_mm(d2_q),
-        .x_mm(x_mm), .y_mm(y_mm), .result_valid(coord_valid));
+        .x_mm(x_mm), .y_mm(y_mm), .angle_q16(angle_q16), .angle_valid(angle_valid),
+        .result_valid(coord_valid));
+
+    // angle in tenths of a degree for the LCD (e.g. 33.7 deg -> 337)
+    wire [31:0] ang_pos    = angle_q16[31] ? 32'd0 : angle_q16;
+    wire [35:0] ang_x10    = ang_pos * 4'd10;
+    wire [15:0] ang_tenths = ang_x10[31:16];
 
     // ---- Tx self-check: count 40 kHz cycles per burst -------------------------------------
     reg wave_q; reg [7:0] cyc_run, cyc_last;
@@ -218,13 +226,16 @@ module ultrasonic_top #(
     bin2bcd c8 (.clk(clk), .rst(rst), .start(upd), .bin(cap({4'd0, threshold})), .bcd(b_th));
     bin2bcd c9 (.clk(clk), .rst(rst), .start(upd), .bin(meas_count),        .bcd(b_n));
     bin2bcd ca (.clk(clk), .rst(rst), .start(upd), .bin({6'd0, cyc_last}),   .bcd(b_cy));
+    wire [15:0] b_ang;
+    bin2bcd cb (.clk(clk), .rst(rst), .start(upd), .bin(cap(ang_tenths)),    .bcd(b_ang));
 
     // freeze flags with the digits so text and numbers always match
-    reg [2:0] to_q, en_q; reg fix_q, none_q, xneg_q;
+    reg [2:0] to_q, en_q; reg fix_q, none_q, xneg_q, ang_ok_q;
     always @(posedge clk) begin
-        if (rst) begin to_q <= 0; en_q <= 0; fix_q <= 0; none_q <= 1; xneg_q <= 0; end
+        if (rst) begin to_q <= 0; en_q <= 0; fix_q <= 0; none_q <= 1; xneg_q <= 0; ang_ok_q <= 0; end
         else if (upd) begin
             to_q <= to; en_q <= ch_en; fix_q <= fix_ok; none_q <= (meas_count == 0); xneg_q <= x_mm[15];
+            ang_ok_q <= angle_valid;
         end
     end
 
@@ -243,7 +254,10 @@ module ultrasonic_top #(
             2'd1: begin                                   // position
                 line1 = fix_q ? {"X:", xneg_q ? "-" : "+", d4(b_x), " Y:", d4(b_y), "  "}
                               : "X:----- Y:----  ";
-                line2 = {fix_q ? "Fix OK" : "No fix", "     ", cnt_txt};
+                line2 = !fix_q    ? {"No fix     ", cnt_txt} :
+                        !ang_ok_q ? {"Ang:--.-   ", cnt_txt} :
+                                    {"Ang:", dch(b_ang[11:8]), dch(b_ang[7:4]), ".",
+                                     dch(b_ang[3:0]), "   ", cnt_txt};
             end
             2'd2: begin                                   // echo levels for tuning
                 line1 = {"P1:", d4(b_p0), " P2:", d4(b_p1), " "};
