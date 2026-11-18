@@ -54,7 +54,8 @@ module tb_ultrasonic_top;
         end
     endtask
 
-    integer fails = 0, ex, ey, n0;
+    integer fails = 0, ex, ey, n0, ea;
+    real    ang;
     task measure;
         begin
             for (k = 0; k < 3; k = k + 1) edges[k] = 0;
@@ -66,10 +67,16 @@ module tb_ultrasonic_top;
         end
     endtask
     task check_xy; input integer wx, wy, tol; input [8*30-1:0] label;
+        real want;
         begin
             ex = dut.x_mm - wx; ey = dut.y_mm - wy;
-            $write(" %-30s D=%4d %4d %4d  X=%5d Y=%4d", label, dut.d0_q, dut.d1_q, dut.d2_q, dut.x_mm, dut.y_mm);
-            if (dut.fix_ok && ex >= -tol && ex <= tol && ey >= -tol && ey <= tol) $display("  PASS");
+            ang  = $itor(dut.angle_q16) / 65536.0;
+            want = $atan2(wy * 1.0, wx * 1.0) * 57.2957795;
+            ea   = $rtoi((ang - want) * 10.0);              // error in tenths of a degree
+            $write(" %-26s D=%4d %4d %4d  X=%5d Y=%4d  A=%5.1f", label, dut.d0_q, dut.d1_q, dut.d2_q,
+                   dut.x_mm, dut.y_mm, ang);
+            if (dut.fix_ok && dut.angle_valid && ex >= -tol && ex <= tol && ey >= -tol && ey <= tol
+                && ea >= -10 && ea <= 10) $display("  PASS");
             else begin $display("  FAIL (want %0d,%0d)", wx, wy); fails = fails + 1; end
         end
     endtask
@@ -98,7 +105,7 @@ module tb_ultrasonic_top;
         sw[13:12] = 0; screen;
         if (l1 !== "D1:2236 D2:2062 ") fails = fails + 1;
         sw[13:12] = 1; screen;
-        if (l1[127:48] !== "X:+1000 Y:" || l2[127:80] !== "Fix OK") fails = fails + 1;
+        if (l1[127:48] !== "X:+1000 Y:" || l2[127:96] !== "Ang:") fails = fails + 1;
 
         // 3. real receivers (simulated analog echoes)
         $display(" -- real receiver path (SW14 = 0), simulated echoes --");
